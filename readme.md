@@ -9,13 +9,13 @@ This uses [Buckleup](https://github.com/hellais/Buckle-Up) to patch the app perm
 
 To patch a file :
 
-1- `$ sudo chmod -R +x .`
-2- `$ ./patch.sh COMPLETE_PATH_TO_YOUR_APP`
+- `$ sudo chmod -R +x .`
+- `$ ./patch.sh COMPLETE_PATH_TO_YOUR_APP`
 
 To unpatch it :
 
-1- Check it's already patched in patched_apps.txt
-2- `$ ./unpatch.sh COMPLETE_PATH_TO_YOUR_APP`
+- Check it's already patched in patched_apps.txt
+- `$ ./unpatch.sh COMPLETE_PATH_TO_YOUR_APP`
 
 
 ###Advance usage
