@@ -1,0 +1,5 @@
+;:buckleup:0.1:nonet:No network:
+(version 1)
+
+(allow default)
+(deny network*)

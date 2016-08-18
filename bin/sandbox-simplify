@@ -1,0 +1,182 @@
+#!/usr/bin/perl
+# 
+# Copyright (c) 2006-2008 Apple Inc. All rights reserved.
+# 
+# @APPLE_LICENSE_HEADER_START@
+# 
+# This file contains Original Code and/or Modifications of Original Code
+# as defined in and that are subject to the Apple Public Source License
+# Version 2.0 (the 'License'). You may not use this file except in
+# compliance with the License. Please obtain a copy of the License at
+# http://www.opensource.apple.com/apsl/ and read it before using this
+# file.
+# 
+# The Original Code and all software distributed under the License are
+# distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+# EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+# INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+# Please see the License for the specific language governing rights and
+# limitations under the License.
+# 
+# @APPLE_LICENSE_HEADER_END@
+# 
+
+# sandbox-simplify -- simplify a sandbox profile created by a trace directive
+
+use warnings;
+use strict;
+
+die "Usage: sandbox-simplify profile\n" unless @ARGV == 1;
+
+# Remove string quoting from trace profile.
+# a\x22b\x5cc -> a"b\c
+sub trace_unquote {
+	my ($in, $out) = (shift, '');
+	$out .= $1 . chr(hex $2) while $in =~ s/(.*?)\\x(..)//;
+	$out .= $in;
+	return $out;
+}
+
+# Quote a string for Scheme.
+# a"b\c -> a\"b\\c
+sub scheme_quote {
+	my $str = shift;
+	$str =~ s/([\\"])/\\$1/g;
+	return $str;
+}
+
+# Quote a string for embedding into a regular expression.
+# a"b\c -> a"b\\c
+sub regex_quote {
+	my $str = shift;
+	# quote all non-word characters
+	$str = "\Q$str\E";
+	# unquote some safe non-word characters
+	$str =~ s{\\([`~!@#%&\-={};:'",<>/])}{$1}g; #'
+	return $str;
+}
+
+# Create a Scheme string literal using sharp quotes or regular quotes.
+# a"b\c -> "a\"b\\c"
+sub scheme_str {
+	my $str = shift;
+	if ($str =~ /"/ || $str !~ /\\/) {
+		return '"' . &scheme_quote($str) . '"';
+	} else {
+		return "#\"$str\"";
+	}
+}
+
+# Table of processed operations.
+my %ops;
+
+# Record a processed operation.  $op (required) is the operation; $filter
+# (optional) is the rule's filter.
+sub memo {
+	my ($op, $filter) = @_;
+	if (defined $filter) {
+		$ops{$op} = {} unless exists $ops{$op};
+		$ops{$op}->{$filter} = 1;
+	} else {
+		$ops{$op} = {};
+	}
+}
+
+# These are tables of subroutines that handle traced events.  handle_type
+# contains catch-all handlers based on the filter type.  handle_op handles
+# specific operations.  handle_path handles file operations on paths matching a
+# regex.
+my (%handle_type, %handle_op, @handle_path);
+
+# Process literal filters, applying any handle_path handlers.
+$handle_type{'literal'} = sub {
+	my ($op, $type, $path) = @_;
+	$path = &trace_unquote($path);
+	foreach my $handler (@handle_path) {
+		return &{$handler->[1]}($op, $path) if $path =~ /$handler->[0]/s;
+	}
+	$path = &scheme_str($path);
+	&memo($op, "(literal $path)");
+};
+
+# Process network filters, treating addresses according to the protocol.
+$handle_type{'local'} =
+$handle_type{'remote'} = sub {
+	my ($op, $type, $addr, $proto) = @_;
+	$addr = &scheme_str(&trace_unquote($addr));
+	$proto =~ s/[46]$//;
+	&memo($op, "($type $proto $addr)");
+};
+
+# Fold network-bind into network-inbound.
+$handle_op{'network-bind'} = sub {
+	my ($op, $type, $addr, $proto) = @_;
+	&{$handle_type{$type}}('network-inbound', $type, $addr, $proto);
+};
+
+# Generalize paths in /private/var/folders.
+unshift @handle_path, ['^/private/var/folders/[^/]+/[^/]+/(.*)', sub {
+	my $regex = &scheme_str('^/private/var/folders/[^/]+/[^/]+/' . &regex_quote($1) . '$');
+	&memo(shift, "(regex $regex)");
+}];
+
+# Allow an entire subpath if any descendant is accessed.
+sub handle_subpath {
+	my $path = shift;
+	my $subpath = &scheme_str($path);
+	unshift @handle_path, ["^$path(?:\$|/)", sub {
+		&memo(shift, qq{(subpath $subpath)});
+	}];
+}
+
+&handle_subpath('/System');
+&handle_subpath('/usr/lib');
+&handle_subpath('/usr/share');
+&handle_subpath('/private/var/db/dyld');
+
+# Pass an event to the appropriate handler subroutine.
+sub process_event {
+	my ($o, $t, $f, $x) = @_;
+	if (!defined($t)) {
+		&memo($o);
+	} elsif (exists $handle_op{$o}) {
+		&{$handle_op{$o}}($o, $t, $f, $x);
+	} elsif (exists $handle_type{$t}) {
+		&{$handle_type{$t}}($o, $t, $f, $x);
+	} else {
+		$f = &scheme_str(&trace_unquote($f));
+		&memo($o, "($t $f)");
+	}
+}
+
+# Process the trace profile.
+open(my $trace, '<', $ARGV[0])
+	or die "failed to open $ARGV[0]: $!\n";
+while (1) {
+	my $l = <$trace>;
+	last unless defined $l;
+	next if $l =~ /^\(version 1\)/;
+	if ($l =~ /^\(allow (\S+)\)$/) {
+		&process_event($1);
+	} elsif ($l =~ /^\(allow (\S+) \((\S+) (?:(\w+) )?"(.*)/) {
+		my ($o, $t, $x, $f) = ($1, $2, $3, $4);
+		until ($f =~ s/"\)\)$//g) {
+			$l = <$trace>;
+			die "malformed trace profile\n" unless defined $l;
+			$f .= $l;
+		}
+		&process_event($o, $t, $f, $x);
+	} else {
+		die "malformed trace profile\n";
+	}
+}
+close $trace;
+
+# Pretty-print a profile allowing the traced events.
+print "(version 1)\n\n(deny default)\n";
+foreach my $op (sort keys %ops) {
+	print "\n(allow $op";
+	print "\n       $_" foreach sort keys %{$ops{$op}};
+	print ")\n";
+}
