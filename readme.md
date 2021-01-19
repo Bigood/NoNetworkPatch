@@ -1,11 +1,11 @@
-##Prevent network usage of an app on OS X
+## Prevent network usage of an app on OS X
 
 Use these shell scripts to prevent an OS X app for using outgoing and ingoing network, like Little Snitch or a 2 way firewall would have done.
 
 This uses [Buckleup](https://github.com/hellais/Buckle-Up) to patch the app permanently.
 
 
-###Usage
+### Usage
 
 To patch a file :
 
@@ -18,7 +18,7 @@ To unpatch it :
 - `$ ./unpatch.sh COMPLETE_PATH_TO_YOUR_APP`
 
 
-###Advance usage
+### Advance usage
 
 To generate a Seatbelt for an app, use generate_sb.sh : 
 
@@ -27,6 +27,6 @@ To generate a Seatbelt for an app, use generate_sb.sh :
 Then use buckleup.py directly to patch it
 
 
-###Note 
+### Note 
 
 From OS X 10.11, sandbox-simplify is no longer on /usr/bin ; if you need to generate some .sb, copy it from ./bin.
